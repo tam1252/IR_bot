@@ -13,7 +13,7 @@ scope = [
 credentials = ServiceAccountCredentials.from_json_keyfile_name(
   'gspread_sheet.json', scope)
 gc = gspread.authorize(credentials)
-SPREAD_SHEET_KEY = "1u2hBCXqeThSLyK42YJcK7v08u6ZR15aJX5PIfRUEQvo"
+SPREAD_SHEET_KEY = os.environ["SPREAD_SHEET_KEY"]
 workbook = gc.open_by_key(SPREAD_SHEET_KEY)
 
 bot = interactions.Client(token=Token, intents=interactions.Intents.ALL)
