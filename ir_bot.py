@@ -3,9 +3,9 @@ import discord
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from interactions.ext.wait_for import wait_for, setup
+import os
 
-
-Token = "MTA2MTY2MzY0MzU3OTcxNTYyNg.GeV14Z.aCsdoZQvLUhZ5hUcXeAxME7R7m8TJBC_BRBA5U"
+Token = os.environ["DISCORD_BOT_TOKEN"]
 scope = [
   'https://spreadsheets.google.com/feeds',
   'https://www.googleapis.com/auth/drive'
