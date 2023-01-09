@@ -68,7 +68,7 @@ async def ir(ctx, song_title: int, score: int, result):
   embed.add_field(
     name="Score",
     value=
-    f"{score}/{max_score[song_title]}({round(100*score/max_score[song_title], 2)}%"
+    f"{score}/{max_score[song_title]}({round(100*score/max_score[song_title], 2)}%)"
   )
 
   #embed.add_field(name="Score Rate", value=f"")
