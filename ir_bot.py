@@ -5,7 +5,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 from interactions.ext.wait_for import wait_for, setup
 
 
-Token = "MTA2MTY2MzY0MzU3OTcxNTYyNg.GTvQJf.V2BJEuNO9xMz4dWnSn10MenloVrZLNvaeAcwqo"
+Token = "MTA2MTY2MzY0MzU3OTcxNTYyNg.GeV14Z.aCsdoZQvLUhZ5hUcXeAxME7R7m8TJBC_BRBA5U"
 scope = [
   'https://spreadsheets.google.com/feeds',
   'https://www.googleapis.com/auth/drive'
