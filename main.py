@@ -78,15 +78,13 @@ async def ir(ctx, song_title: int, score: int, result):
   worksheet_list[0].update_cell(4 + song_title,
                                 4 + 4 * player_list[str(ctx.user)],
                                 str(result.url))
-  print(worksheet_list[0])
-  print(worksheet_list[0].acell("E11").value)
   embed.add_field(name="Total Score",
                   value=str(worksheet_list[0].acell(pic_cell1[str(ctx.user)]).value))
   embed.add_field(
     name="順位",
     value=str(worksheet_list[0].acell(pic_cell2[str(ctx.user)]).value) + "位")
-  embed.set_image(url=result.url)
-  print(result.url)
+  embed.set_image(url=str(result.url))
+  print(embed)
   await ctx.send(
     embeds=[interactions.Embed(**embed.to_dict())],  #embedの変換
   )
