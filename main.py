@@ -63,7 +63,7 @@ async def ir(ctx, song_title: int, score: int, result):
   embed = discord.Embed(title="IR Submitted!!",
                         description="Your score added to scoresheet.",
                         color=0xffff00)
-  embed.set_image(url=result.url)
+  
   embed.add_field(name="Song", value=song_list[song_title])
   embed.add_field(
     name="Score",
@@ -85,6 +85,8 @@ async def ir(ctx, song_title: int, score: int, result):
   embed.add_field(
     name="順位",
     value=str(worksheet_list[0].acell(pic_cell2[str(ctx.user)]).value) + "位")
+  embed.set_image(url=result.url)
+  print(result.url)
   await ctx.send(
     embeds=[interactions.Embed(**embed.to_dict())],  #embedの変換
   )
