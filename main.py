@@ -4,6 +4,7 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from interactions.ext.wait_for import wait_for, setup
 import os
+from data import song_list, max_score
 
 Token = os.environ["DISCORD_BOT_TOKEN"]
 scope = [
@@ -37,14 +38,7 @@ async def test(ctx: interactions.CommandContext):
       name="song_title",
       description="曲名を選んでください",
       required=True,
-      choices=[
-        interactions.Choice(name="sl11 フロンティア↑↑エクスプローラー [EARTH]", value=1),
-        interactions.Choice(name="★15 Vantablack {color: #000000;}", value=2),
-        interactions.Choice(
-          name="sl11 Romancecar (Kukan Junkyu Edit) [Nemesis]", value=3),
-        interactions.Choice(name="★15 幽雅に咲かせ、墨染の桜 [NORMAL]", value=4),
-        interactions.Choice(name="★17 パネルでポン/フレアのテーマ [皿] ", value=5)
-      ],
+      choices = [interactions.Choice(name=song_list[i], value=i) for i in [1, 2, 3, 4, 5]]
     ),
     interactions.Option(
       type=interactions.OptionType.INTEGER,
@@ -88,17 +82,6 @@ async def ir(ctx, song_title: int, score: int, result):
   await ctx.send(
     embeds=[interactions.Embed(**embed.to_dict())],  #embedの変換
   )
-
-
-song_list = {
-  1: "sl11 フロンティア↑↑エクスプローラー [EARTH]",
-  2: "★15 Vantablack {color: #000000;}",
-  3: "sl11 Romancecar (Kukan Junkyu Edit) [Nemesis]",
-  4: "★15 幽雅に咲かせ、墨染の桜 [NORMAL]",
-  5: "★17 パネルでポン/フレアのテーマ [皿]"
-}
-
-max_score = {1: 5764, 2: 4810, 3: 4756, 4: 5222, 5: 2644}
 
 pic_cell1 = {
   "ひたらぎ": "E11",
