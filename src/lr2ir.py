@@ -2,6 +2,7 @@
 import requests
 from bs4 import BeautifulSoup
 import pandas as pd
+from io import StringIO
 
 BASE_URL = 'http://www.dream-pro.info/~lavalse/LR2IR/search.cgi?mode=ranking&courseid='
 
@@ -18,7 +19,7 @@ def fetch_lr2_ranking(course_id: int) -> pd.DataFrame:
             raise ValueError("テーブルの数が予期より少ないためデータ取得に失敗しました。")
 
         target_table = tables[3]
-        df = pd.read_html(str(target_table))[0]
+        df = pd.read_html(StringIO(str(target_table)))[0]
 
         # プレイヤーリンクからIDを抽出
         player_links = []
