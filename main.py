@@ -1,9 +1,14 @@
 import discord
 from discord import app_commands, ui, Interaction
 from discord.ext import commands, tasks
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 import json
 from src import lr2ir  # あなたの fetch_lr2_ranking モジュール
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
+
 
 # === 設定 ===
 CHANNEL_ID = 123456789012345678  # ← 投稿チャンネルIDに置換
@@ -35,18 +40,8 @@ async def on_ready():
         await bot.tree.sync()
     except Exception as e:
         print(f"コマンド同期エラー: {e}")
-    weekly_post.start()
 
-@tasks.loop(weeks=1)
-async def weekly_post():
-    channel = bot.get_channel(CHANNEL_ID)
-    if channel:
-        df = lr2ir.fetch_lr2_ranking(13136)
-        if df.empty:
-            await channel.send("ランキング取得に失敗しました。")
-            return
-        top = df.head(5).to_string(index=False)
-        await channel.send(f"**LR2ランキング（13136）TOP5**\n```\n{top}\n```")
+
 
 # === アナウンス用モーダル ===
 class AnnounceModal(ui.Modal, title="イベントアナウンス"):
@@ -113,4 +108,4 @@ async def setup_hook():
     await bot.add_cog(LR2Cog(bot))
 
 # === 起動 ===
-bot.run("YOUR_DISCORD_BOT_TOKEN")
+bot.run(os.getenv("DISCORD_TOKEN"))
