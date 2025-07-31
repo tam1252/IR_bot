@@ -1,0 +1,15 @@
+[project]
+name = "ir-bot"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "bs4>=0.0.2",
+    "discord-py>=2.5.2",
+    "html5lib>=1.1",
+    "ipykernel>=6.30.0",
+    "lxml>=6.0.0",
+    "pandas>=2.3.1",
+    "requests>=2.32.4",
+]
