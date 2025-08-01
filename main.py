@@ -2,6 +2,7 @@ import os
 import json
 import asyncio
 from io import StringIO, BytesIO
+import re
 from datetime import datetime, timedelta
 
 import discord
@@ -9,6 +10,7 @@ from discord import app_commands, ui, Interaction, Embed
 from discord.ext import commands
 from dotenv import load_dotenv
 from pandas import DataFrame
+import requests
 
 from src import lr2ir  # fetch_lr2_ranking を含む自作モジュール
 
@@ -81,8 +83,6 @@ async def on_ready():
     except Exception as e:
         print(f"コマンド同期エラー: {e}")
 
-
-
 # === モーダルによるアナウンス ===
 
 # === モーダル ===
@@ -91,7 +91,7 @@ class AnnounceModal(ui.Modal, title="イベントアナウンス"):
     difficulty = ui.TextInput(label="難易度（例: ★12）", required=True)
     songtitle = ui.TextInput(label="曲名（例: Angelic Snow）", required=True)
     lr2id = ui.TextInput(
-      label="LR2ID または URL",
+      label="COURSEID または URL",
       placeholder="例: 13142 or ...courseid=13142",
       required=True
     )
@@ -129,11 +129,11 @@ class AnnounceModal(ui.Modal, title="イベントアナウンス"):
         save_json(COURSE_JSON_PATH, course_data)
 
         lr2_url = f"http://www.dream-pro.info/~lavalse/LR2IR/search.cgi?mode=ranking&courseid={lr2id}"
-
+        lr2_course_url = f"http://www.dream-pro.info/~lavalse/LR2IR/search.cgi?mode=downloadcourse&courseid={lr2id}"
         await channel.send(
             f"# 第{self.round.value}回\n"
-            f"**{self.songtitle.value}** ({self.difficulty.value})\n"
-            f"[LR2ID: {lr2id}]({lr2_url})\n"
+            f"**{self.songtitle.value}** ({format_difficulty(self.difficulty.value)})\n"
+            f"[コースURL]({lr2_url}) [コースファイルダウンロードはここから]({lr2_course_url})\n"
             f"開催期間: {start.strftime('%Y/%m/%d %H:%M:%S')} ～ {end.strftime('%Y/%m/%d %H:%M:%S')}"
         )
         await interaction.response.send_message(f"{channel.mention} にアナウンスを投稿しました。", ephemeral=True)
@@ -183,15 +183,23 @@ class LR2Cog(commands.Cog):
         if event.lower() == "all":
             await interaction.response.defer(thinking=True, ephemeral=True)
             combined = []
+
             for round_str, course_info in course_map.items():
                 df = lr2ir.fetch_lr2_ranking(course_info["LR2ID"])
                 record = df[df["LR2ID"] == lr2id]
+
                 if not record.empty:
                     row = record.iloc[0]
                     rank = int(row["順位"])
                     total = len(df)
+
                     color_map = {1: "gold", 2: "silver", 3: "#cd7f32"}
-                    rank_str = f'<span style="color:{color_map.get(rank, 'black')}; font-weight:bold;">{rank}位</span>' if rank <= 3 else f"{rank}位"
+                    rank_str = (
+                        f'<span style="color:{color_map[rank]}; font-weight:bold;">{rank}位</span>'
+                        if rank in color_map
+                        else f"{rank}位"
+                    )
+
                     combined.append({
                         "回": int(round_str),
                         "曲名": course_info["title"],
@@ -205,13 +213,18 @@ class LR2Cog(commands.Cog):
                 return
 
             result_df = DataFrame(combined).sort_values("回")
+
+            # HTML生成
             html = generate_bootstrap_html_table(result_df, "あなたのねぶかわウィークリー成績一覧")
+            html_bytes = BytesIO(html.encode("utf-8"))
+
             await interaction.followup.send(
-                content="HTMLを送信します。",
-                file=discord.File(BytesIO(html.encode()), filename="mypage_all.html"),
+                content="あなたの全記録をHTML形式で送信します。",
+                file=discord.File(html_bytes, filename="mypage_all.html"),
                 ephemeral=True
             )
             return
+
 
         if event not in course_map:
             await interaction.response.send_message("指定された回のデータは存在しません。", ephemeral=True)
