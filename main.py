@@ -20,7 +20,7 @@ load_dotenv()
 CHANNEL_ID = 123456789012345678  # ← 投稿チャンネルIDに置換
 COURSE_JSON_PATH = "course_id.json"
 LR2ID_DB_FILE = "lr2_users.json"
-ANNOUNCE_ROLE_NAME = "運営"
+ANNOUNCE_ROLE_NAME = "管理者"
 
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix='!', intents=intents)
