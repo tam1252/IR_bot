@@ -156,7 +156,38 @@ async def upload_course(interaction: Interaction, channel: discord.TextChannel, 
     await channel.send(content="コースファイルをアップロードしました：", file=await file.to_file())
     await interaction.response.send_message("ファイルをアップロードしました。", ephemeral=True)
 
+#リザルト表示
+@bot.tree.command(name="result", description="指定した回のランキングを表示")
+@app_commands.describe(event="対象の回数（例: 1）")
+async def result(interaction: discord.Interaction, event: str):
+    if not any(role.name == ANNOUNCE_ROLE_NAME for role in interaction.user.roles):
+        await interaction.response.send_message("このコマンドは運営のみ使用できます。", ephemeral=True)
+        return
 
+    if event not in course_map:
+        await interaction.response.send_message("その回のデータは存在しません。", ephemeral=True)
+        return
+
+    await interaction.response.defer(thinking=True)
+
+    course_info = course_map[event]
+    df = lr2ir.fetch_lr2_ranking(course_info["LR2ID"])
+
+    user_map = load_json(LR2ID_DB_FILE)
+    id_to_name = {}
+    for user_id, lr2id in user_map.items():
+        user = await interaction.guild.fetch_member(int(user_id))
+        if user:
+            id_to_name[str(lr2id)] = user.display_name
+
+    medals = ["🥇", "🥈", "🥉"]
+    msg = f"**第{event}回 ランキング結果**\n"
+    for idx, row in df.iterrows():
+        name = id_to_name.get(str(row["LR2ID"]), row["プレイヤー"])
+        medal = medals[idx] if idx < 3 else f"{idx+1}位"
+        msg += f"{medal} {name} - {row['スコア']} ({row['ランク']})\n"
+
+    await interaction.followup.send(msg)
 
 # === 登録・マイページ ===
 class LR2Cog(commands.Cog):
