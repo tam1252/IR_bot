@@ -160,32 +160,64 @@ async def upload_course(interaction: Interaction, channel: discord.TextChannel, 
 @bot.tree.command(name="result", description="指定した回のランキングを表示")
 @app_commands.describe(event="対象の回数（例: 1）")
 async def result(interaction: discord.Interaction, event: str):
+    await interaction.response.defer(thinking=True)  # ← 最初に defer する！
+
     if not any(role.name == ANNOUNCE_ROLE_NAME for role in interaction.user.roles):
-        await interaction.response.send_message("このコマンドは運営のみ使用できます。", ephemeral=True)
+        await interaction.followup.send("このコマンドは運営のみ使用できます。", ephemeral=True)
         return
 
     if event not in course_map:
-        await interaction.response.send_message("その回のデータは存在しません。", ephemeral=True)
+        await interaction.followup.send("その回のデータは存在しません。", ephemeral=True)
         return
-
-    await interaction.response.defer(thinking=True)
 
     course_info = course_map[event]
     df = lr2ir.fetch_lr2_ranking(course_info["LR2ID"])
 
+    if not all(col in df.columns for col in ["順位", "スコア", "LR2ID"]):
+        await interaction.followup.send("必要な列が見つかりませんでした。", ephemeral=True)
+        return
+
+    player_col = next((col for col in df.columns if "プレイヤー" in col or "名前" in col), None)
+    if not player_col:
+        await interaction.followup.send("プレイヤー名の列が見つかりませんでした。", ephemeral=True)
+        return
+
+    df = df.sort_values("順位").reset_index(drop=True)
+
     user_map = load_json(LR2ID_DB_FILE)
     id_to_name = {}
     for user_id, lr2id in user_map.items():
-        user = await interaction.guild.fetch_member(int(user_id))
-        if user:
-            id_to_name[str(lr2id)] = user.display_name
+        try:
+            member = await interaction.guild.fetch_member(int(user_id))
+            id_to_name[str(lr2id)] = member.display_name
+        except:
+            continue
 
-    medals = ["🥇", "🥈", "🥉"]
     msg = f"**第{event}回 ランキング結果**\n"
+    medals = ["🥇", "🥈", "🥉"]
+    current_rank = 1
+    medal_idx = 0
+    prev_rank = None
+    count_same_rank = 0
+
     for idx, row in df.iterrows():
-        name = id_to_name.get(str(row["LR2ID"]), row["プレイヤー"])
-        medal = medals[idx] if idx < 3 else f"{idx+1}位"
-        msg += f"{medal} {name} - {row['スコア']} ({row['ランク']})\n"
+        rank = int(row["順位"])
+        name = id_to_name.get(str(row["LR2ID"]), row[player_col])
+        score = row["スコア"]
+
+        if prev_rank is not None and rank != prev_rank:
+            # スキップ数更新（例：1,1,3,4 → 次は4位）
+            medal_idx += count_same_rank
+            count_same_rank = 0
+
+        if medal_idx < len(medals):
+            prefix = medals[medal_idx]
+        else:
+            prefix = f"{rank}位"
+
+        msg += f"{prefix} {name} - {score}\n"
+        prev_rank = rank
+        count_same_rank += 1
 
     await interaction.followup.send(msg)
 
