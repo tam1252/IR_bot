@@ -59,27 +59,17 @@ def pgf(x, m):
         return 0.5 / (1 - x)
 
 def calculate_bpi(s, k, z, m, p):
-    try:
-        S = pgf(s / m, m)
-        K = pgf(k / m, m)
-        Z = pgf(z / m, m)
+    """単曲BPIを計算する関数"""
+    S = pgf(s / m, m)
+    K = pgf(k / m, m)
+    Z = pgf(z / m, m)
+    S_prime = S / K
+    Z_prime = Z / K
 
-        print(S, K, Z)
-        S_prime = S / K
-        Z_prime = Z / K
-
-        # 値が不正なら -15 を返す
-        if S_prime <= 0 or Z_prime <= 0:
-            return -15
-
-        if s >= k:
-            bpi = 100 * (np.log(S_prime) ** p) / (np.log(Z_prime) ** p)
-        else:
-            bpi = min(-100 * (np.log(S_prime) ** p) / (np.log(Z_prime) ** p), -15)
-
-        return round(bpi, 2) if not np.isnan(bpi) else -15
-    except:
-        return -15
+    if s >= k:
+        return float(round(100 * (np.log(S_prime) ** p) / (np.log(Z_prime) ** p), 2))
+    else:
+        return float(round(max(-100 * ((np.abs(np.log(S_prime)) ** p) / (np.log(Z_prime) ** p)), -15), 2))
 
 def generate_bootstrap_html_table(df, title="LR2IR ランキング一覧"):
     table_html = df.to_html(classes="table table-striped table-bordered", index=False, escape=False)
