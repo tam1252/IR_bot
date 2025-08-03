@@ -26,7 +26,8 @@ COURSE_RESULT_FILE = "course_result.json"
 LR2ID_DB_FILE = "lr2_users.json"
 ANNOUNCE_ROLE_NAME = "管理者"
 
-insane_scores = pd.read_csv('insane_scores.csv')[['title', 'lr2_bmsid', 'level', 'theoretical_score', 'top_score', 'average_score', 'optimized_p']]
+insane_scores = pd.read_csv('insane_scores.csv')
+insane_scores["label"] = insane_scores.apply(lambda row: f"★{row['level']} {row['title']}", axis=1)
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix='!', intents=intents)
 
@@ -58,16 +59,27 @@ def pgf(x, m):
         return 0.5 / (1 - x)
 
 def calculate_bpi(s, k, z, m, p):
-    S = pgf(s / m, m)
-    K = pgf(k / m, m)
-    Z = pgf(z / m, m)
-    S_prime = S / K
-    Z_prime = Z / K
+    try:
+        S = pgf(s / m, m)
+        K = pgf(k / m, m)
+        Z = pgf(z / m, m)
 
-    if s >= k:
-        return 100 * (np.log(S_prime) ** p) / (np.log(Z_prime) ** p)
-    else:
-        return min(-100 * (np.log(S_prime) ** p) / (np.log(Z_prime) ** p), -15)
+        print(S, K, Z)
+        S_prime = S / K
+        Z_prime = Z / K
+
+        # 値が不正なら -15 を返す
+        if S_prime <= 0 or Z_prime <= 0:
+            return -15
+
+        if s >= k:
+            bpi = 100 * (np.log(S_prime) ** p) / (np.log(Z_prime) ** p)
+        else:
+            bpi = min(-100 * (np.log(S_prime) ** p) / (np.log(Z_prime) ** p), -15)
+
+        return round(bpi, 2) if not np.isnan(bpi) else -15
+    except:
+        return -15
 
 def generate_bootstrap_html_table(df, title="LR2IR ランキング一覧"):
     table_html = df.to_html(classes="table table-striped table-bordered", index=False, escape=False)
@@ -286,6 +298,43 @@ async def result(interaction: discord.Interaction, event: str):
         count_same_rank += 1
 
     await interaction.followup.send(msg)
+
+@bot.tree.command(name="bpi", description="スコアからBPIを計算")
+@app_commands.describe(song="★難易度と曲名（例: ★16 Born [29Another]）", score="あなたのスコア（整数）")
+async def bpi(interaction: discord.Interaction, song: str, score: int):
+    await interaction.response.defer(thinking=True, ephemeral=True)
+
+    try:
+        level_title = song.strip()
+        row = insane_scores[insane_scores["label"] == level_title].iloc[0]
+    except IndexError:
+        await interaction.followup.send("該当する楽曲が見つかりませんでした。", ephemeral=True)
+        return
+
+    bpi = calculate_bpi(
+        s=score,
+        k=row["average_score"],
+        z=row["top_score"],
+        m=row["theoretical_score"],
+        p=row["optimized_p"]
+    )
+
+    await interaction.followup.send(
+        f"**{row['title']} ({row['level']}) の BPI**\n"
+        f"あなたのスコア: {score}\n"
+        f"→ **BPI: {bpi}**",
+        ephemeral=True
+    )
+
+# === オートコンプリート ===
+@bpi.autocomplete("song")
+async def song_autocomplete(interaction: discord.Interaction, current: str):
+    filtered = [
+        label for label in insane_scores["label"]
+        if current.lower() in label.lower()
+    ][:25]  # Discordの制限
+
+    return [app_commands.Choice(name=label, value=label) for label in filtered]
 
 # === 登録・マイページ ===
 class LR2Cog(commands.Cog):
