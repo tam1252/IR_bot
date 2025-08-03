@@ -39,7 +39,6 @@ def fetch_lr2_ranking(course_id: int) -> pd.DataFrame:
         # 不正な行を除外し、必要なカラムだけにする
         df = df.dropna(subset=[df.columns[3]])[['順位', 'LR2ID', 'プレイヤー', 'スコア', 'PG', 'GR']]
         df = df.reset_index(drop=True)
-        print(df)
         return df
 
     except Exception as e:

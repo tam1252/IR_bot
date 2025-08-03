@@ -9,7 +9,7 @@ import discord
 from discord import app_commands, ui, Interaction, Embed
 from discord.ext import commands
 from dotenv import load_dotenv
-from pandas import DataFrame
+from pandas import DataFrame, json_normalize
 import requests
 
 from src import lr2ir  # fetch_lr2_ranking を含む自作モジュール
@@ -19,6 +19,7 @@ load_dotenv()
 # === 設定 ===
 CHANNEL_ID = 123456789012345678  # ← 投稿チャンネルIDに置換
 COURSE_JSON_PATH = "course_id.json"
+COURSE_RESULT_FILE = "course_result.json"
 LR2ID_DB_FILE = "lr2_users.json"
 ANNOUNCE_ROLE_NAME = "管理者"
 
@@ -199,6 +200,7 @@ async def result(interaction: discord.Interaction, event: str):
     medal_idx = 0
     prev_rank = None
     count_same_rank = 0
+    result_list = []
 
     for idx, row in df.iterrows():
         rank = int(row["順位"])
@@ -218,6 +220,18 @@ async def result(interaction: discord.Interaction, event: str):
         msg += f"{prefix} {name} - {score}\n"
         prev_rank = rank
         count_same_rank += 1
+        result_list.append({
+            "順位": rank,
+            "LR2ID": lr2id,
+            "プレイヤー": name,
+            "スコア": score,
+            "PG": int(row["PG"]) if "PG" in row else None,
+            "GR": int(row["GR"]) if "GR" in row else None
+        })
+    
+    all_results = load_json(COURSE_RESULT_FILE)
+    all_results[event] = result_list
+    save_json(COURSE_RESULT_FILE, all_results)
 
     await interaction.followup.send(msg)
 
@@ -247,8 +261,14 @@ class LR2Cog(commands.Cog):
             await interaction.response.defer(thinking=True, ephemeral=True)
             combined = []
 
+            # course_result.jsonを読み込み
+            result_data = load_json("course_result.json")  # load_json はすでに定義済みのはず
+
             for round_str, course_info in course_map.items():
-                df = lr2ir.fetch_lr2_ranking(course_info["LR2ID"])
+                if round_str not in result_data:
+                    continue
+
+                df = json_normalize(result_data[round_str])
                 record = df[df["LR2ID"] == lr2id]
 
                 if not record.empty:
