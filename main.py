@@ -3,6 +3,8 @@ import json
 import asyncio
 from io import StringIO, BytesIO
 import re
+import requests
+import numpy as np
 from datetime import datetime, timedelta
 
 import discord
@@ -10,6 +12,7 @@ from discord import app_commands, ui, Interaction, Embed
 from discord.ext import commands
 from dotenv import load_dotenv
 from pandas import DataFrame, json_normalize
+import pandas as pd
 import requests
 
 from src import lr2ir  # fetch_lr2_ranking を含む自作モジュール
@@ -23,6 +26,7 @@ COURSE_RESULT_FILE = "course_result.json"
 LR2ID_DB_FILE = "lr2_users.json"
 ANNOUNCE_ROLE_NAME = "管理者"
 
+insane_scores = pd.read_csv('insane_scores.csv')[['title', 'lr2_bmsid', 'level', 'theoretical_score', 'top_score', 'average_score', 'optimized_p']]
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix='!', intents=intents)
 
@@ -46,6 +50,24 @@ def extract_lr2id_from_bytes(content: bytes) -> int:
 
 def format_difficulty(diff: int) -> str:
     return f"★{diff}"
+
+def pgf(x, m):
+    if x == 1:
+        return m
+    else:
+        return 0.5 / (1 - x)
+
+def calculate_bpi(s, k, z, m, p):
+    S = pgf(s / m, m)
+    K = pgf(k / m, m)
+    Z = pgf(z / m, m)
+    S_prime = S / K
+    Z_prime = Z / K
+
+    if s >= k:
+        return 100 * (np.log(S_prime) ** p) / (np.log(Z_prime) ** p)
+    else:
+        return min(-100 * (np.log(S_prime) ** p) / (np.log(Z_prime) ** p), -15)
 
 def generate_bootstrap_html_table(df, title="LR2IR ランキング一覧"):
     table_html = df.to_html(classes="table table-striped table-bordered", index=False, escape=False)
@@ -161,7 +183,7 @@ async def upload_course(interaction: Interaction, channel: discord.TextChannel, 
 @bot.tree.command(name="result", description="指定した回のランキングを表示")
 @app_commands.describe(event="対象の回数（例: 1）")
 async def result(interaction: discord.Interaction, event: str):
-    await interaction.response.defer(thinking=True)  # ← 最初に defer する！
+    await interaction.response.defer(thinking=True)
 
     if not any(role.name == ANNOUNCE_ROLE_NAME for role in interaction.user.roles):
         await interaction.followup.send("このコマンドは運営のみ使用できます。", ephemeral=True)
@@ -173,6 +195,7 @@ async def result(interaction: discord.Interaction, event: str):
 
     course_info = course_map[event]
     df = lr2ir.fetch_lr2_ranking(course_info["LR2ID"])
+    df = df.dropna()
 
     if not all(col in df.columns for col in ["順位", "スコア", "LR2ID"]):
         await interaction.followup.send("必要な列が見つかりませんでした。", ephemeral=True)
@@ -183,8 +206,54 @@ async def result(interaction: discord.Interaction, event: str):
         await interaction.followup.send("プレイヤー名の列が見つかりませんでした。", ephemeral=True)
         return
 
-    df = df.sort_values("順位").reset_index(drop=True)
+    # --- BMSID取得（コースページのHTMLから）
+    course_url = f"http://www.dream-pro.info/~lavalse/LR2IR/search.cgi?mode=ranking&courseid={course_info['LR2ID']}"
+    html = requests.get(course_url).text
+    match = re.search(r'search\.cgi\?mode=ranking&bmsid=(\d+)', html)
+    if not match:
+        await interaction.followup.send("BMSIDの取得に失敗しました。", ephemeral=True)
+        return
+    bmsid = int(match.group(1))
 
+    # --- insane_scoresの行を取得
+    score_row = insane_scores[insane_scores['lr2_bmsid'] == bmsid]
+    if score_row.empty:
+        await interaction.followup.send("insane_scoresに該当するBMSIDが見つかりませんでした。", ephemeral=True)
+        return
+
+    s_row = score_row.iloc[0]
+    m = s_row["theoretical_score"]
+    k = s_row["average_score"]
+    z = s_row["top_score"]
+    p = max(s_row["optimized_p"], 0.8)
+
+    # --- BPI算出とデータ保存用構造構築
+    result_list = []
+    df = df.sort_values("順位").reset_index(drop=True)
+    for _, row in df.iterrows():
+        lr2id = str(row["LR2ID"])
+        score_str = row["スコア"]
+        match = re.match(r"(\d+)/", score_str)
+        s = int(match.group(1)) if match else 0
+        raw_bpi = calculate_bpi(s, k, z, m, p)
+        bpi = round(raw_bpi, 2) if not np.isnan(raw_bpi) else -15
+
+        result_list.append({
+            "順位": int(row["順位"]),
+            "LR2ID": lr2id,
+            "プレイヤー": row[player_col],
+            "スコア": score_str,
+            "PG": int(row["PG"]),
+            "GR": int(row["GR"]),
+            "BPI": bpi
+        })
+
+    # --- JSON保存（course_result.json）
+    course_result = load_json("course_result.json")
+    course_result[event] = result_list
+    save_json("course_result.json", course_result)
+
+    # --- 表示用メッセージ
     user_map = load_json(LR2ID_DB_FILE)
     id_to_name = {}
     for user_id, lr2id in user_map.items():
@@ -194,44 +263,27 @@ async def result(interaction: discord.Interaction, event: str):
         except:
             continue
 
-    msg = f"**第{event}回 ランキング結果**\n"
     medals = ["🥇", "🥈", "🥉"]
+    msg = f"**第{event}回 ランキング結果**\n"
     current_rank = 1
     medal_idx = 0
     prev_rank = None
     count_same_rank = 0
-    result_list = []
 
-    for idx, row in df.iterrows():
-        rank = int(row["順位"])
-        name = id_to_name.get(str(row["LR2ID"]), row[player_col])
+    for row in result_list:
+        rank = row["順位"]
+        name = id_to_name.get(row["LR2ID"], row["プレイヤー"])
         score = row["スコア"]
+        bpi = row["BPI"]
 
         if prev_rank is not None and rank != prev_rank:
-            # スキップ数更新（例：1,1,3,4 → 次は4位）
             medal_idx += count_same_rank
             count_same_rank = 0
 
-        if medal_idx < len(medals):
-            prefix = medals[medal_idx]
-        else:
-            prefix = f"{rank}位"
-
-        msg += f"{prefix} {name} - {score}\n"
+        prefix = medals[medal_idx] if medal_idx < len(medals) else f"{rank}位"
+        msg += f"{prefix} {name} - {score} - BPI: {bpi}\n"
         prev_rank = rank
         count_same_rank += 1
-        result_list.append({
-            "順位": rank,
-            "LR2ID": lr2id,
-            "プレイヤー": name,
-            "スコア": score,
-            "PG": int(row["PG"]) if "PG" in row else None,
-            "GR": int(row["GR"]) if "GR" in row else None
-        })
-    
-    all_results = load_json(COURSE_RESULT_FILE)
-    all_results[event] = result_list
-    save_json(COURSE_RESULT_FILE, all_results)
 
     await interaction.followup.send(msg)
 
