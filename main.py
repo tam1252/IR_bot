@@ -379,7 +379,8 @@ class LR2Cog(commands.Cog):
                         "曲名": course_info["title"],
                         "難易度": format_difficulty(course_info["diff"]),
                         "順位": f"{rank_str} / {total}人",
-                        "スコア": row["スコア"]
+                        "スコア": row["スコア"],
+                        "BPI": row["BPI"],
                     })
 
             if not combined:
