@@ -310,7 +310,7 @@ async def bpi(interaction: discord.Interaction, song: str, score: int):
     )
 
     await interaction.followup.send(
-        f"**{row['title']} ({row['level']}) の BPI**\n"
+        f"**{row['title']} (★{row['level']}) の BPI**\n"
         f"あなたのスコア: {score}\n"
         f"→ **BPI: {bpi}**",
         ephemeral=True
@@ -420,9 +420,52 @@ class LR2Cog(commands.Cog):
         embed.add_field(name="スコア", value=f"{row['スコア']} ({int(row['PG'])}/{int(row['GR'])})", inline=True)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
+
+class Help(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+
+    @app_commands.command(name="help", description="Botの使い方とコマンド一覧を表示します")
+    async def help(self, interaction: Interaction):
+        embed = Embed(
+            title="📘 IR Bot ヘルプ",
+            description="このBotで使える主なコマンドと機能一覧です。",
+            color=0x3498db
+        )
+
+        embed.add_field(
+            name="/register [LR2ID]",
+            value="自分のDiscordアカウントとLR2IDを紐づけます。サーバーに入った人は初めにこのコマンドを実行してください \n 例: `/register 123456`",
+            inline=False
+        )
+        embed.add_field(
+            name="/mypage [回数 or all]",
+            value="自分の順位・スコア・BPIを表示します。`all`で全履歴をhtml形式で確認できます。 \n 例: `/mypage 1` または `/mypage all`",
+            inline=False
+        )
+        embed.add_field(
+            name="/bpi [曲名] [スコア]",
+            value="指定した曲のスコアからBPIを計算します。 \n 例: `/bpi ★20 Air 6500 `",
+            inline=False
+        )
+        embed.add_field(
+            name="/announce",
+            value="新しい大会情報を告知します（管理者用）。",
+            inline=False
+        )
+        embed.add_field(
+            name="/result [回数]",
+            value="指定された回のランキングを表示します。(管理者用)",
+            inline=False
+        )
+
+        embed.set_footer(text="質問や不具合は運営かbot制作者までどうぞ！")
+        await interaction.response.send_message(embed=embed, ephemeral=True)  # ユーザーのみに表示
+
 @bot.event
 async def setup_hook():
     await bot.add_cog(LR2Cog(bot))
+    await bot.add_cog(Help(bot))
 
 # === 起動 ===
 bot.run(os.getenv("DISCORD_TOKEN"))
