@@ -6,6 +6,7 @@ import re
 import requests
 import numpy as np
 from datetime import datetime, timedelta
+import logging
 
 import discord
 from discord import app_commands, ui, Interaction, Embed
@@ -32,6 +33,18 @@ import gspread
 
 load_dotenv()
 
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s:%(levelname)s:%(name)s: %(message)s',
+    handlers=[
+        logging.FileHandler('ir_bot.log', encoding='utf-8'),
+        logging.StreamHandler()
+        ]
+)
+
+console_logger = logging.getLogger()
+console_logger.setLevel(logging.WARNING)
+s
 # === 設定 ===
 
 COURSE_RESULT_FILE = "course_result.json"
