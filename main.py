@@ -44,7 +44,7 @@ logging.basicConfig(
 
 console_logger = logging.getLogger()
 console_logger.setLevel(logging.WARNING)
-s
+
 # === 設定 ===
 
 COURSE_RESULT_FILE = "course_result.json"
