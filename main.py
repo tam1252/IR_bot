@@ -10,6 +10,7 @@ import asyncio
 from datetime import datetime, timedelta
 import logging
 
+import aiohttp
 import discord
 import gspread
 import gspread_asyncio
@@ -66,6 +67,7 @@ COURSE_WS = "CourseData"            # コースデータタブ
 COURSE_JSON_PATH = 'course_id.json'
 SCORETA_CATEGORY_NAME = "開催中のスコアタ"  # 告知チャンネルを作成するカテゴリー名
 ANNOUNCE_CHANNEL_NAME = os.environ.get("ANNOUNCE_CHANNEL", "一般")  # @everyone告知を投稿するチャンネル名
+GITHUB_REPO = os.environ.get("GITHUB_REPO", "")  # 更新情報取得先リポジトリ（例: tam1252/IR_bot）
 
 # insane_scores.csv を読み込み、表示用ラベル列を追加
 insane_scores = pd.read_csv('insane_scores.csv')
@@ -939,8 +941,70 @@ class Help(commands.Cog):
             value="指定された回のランキングを表示します。(管理者用)",
             inline=False
         )
+        embed.add_field(
+            name="/changelog [件数]",
+            value="Botの最近の更新情報を表示します。",
+            inline=False
+        )
         embed.set_footer(text="質問や不具合は運営(ねぶかわ)かbot制作者(ひたらぎ)までどうぞ！")
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="changelog", description="Botの最近の更新情報をGitHubのコミット履歴から表示します")
+    @app_commands.describe(count="表示するコミット数（1〜10、デフォルト: 5）")
+    async def changelog(self, interaction: Interaction, count: int = 5):
+        """GitHub のコミット履歴を取得して更新内容を Embed で表示する。"""
+        count = max(1, min(count, 10))
+
+        if not GITHUB_REPO:
+            await interaction.response.send_message(
+                "GITHUB_REPO が未設定です。.env を確認してください。", ephemeral=True
+            )
+            return
+
+        await interaction.response.defer(thinking=True)
+
+        url = f"https://api.github.com/repos/{GITHUB_REPO}/commits?per_page={count}"
+        headers = {"Accept": "application/vnd.github+json"}
+        token = os.getenv("GITHUB_TOKEN")
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=headers) as resp:
+                    if resp.status != 200:
+                        await interaction.followup.send(
+                            f"GitHub API のレスポンスが異常です（{resp.status}）。", ephemeral=True
+                        )
+                        return
+                    commits = await resp.json()
+        except Exception as e:
+            await interaction.followup.send(f"GitHub API の取得に失敗しました。\n```\n{e}\n```", ephemeral=True)
+            return
+
+        embed = Embed(
+            title="🔄 Bot 更新情報",
+            description=f"[{GITHUB_REPO}](https://github.com/{GITHUB_REPO}) の最新 {len(commits)} 件",
+            color=discord.Color.blurple(),
+        )
+
+        for c in commits:
+            sha     = c["sha"][:7]
+            html_url = c["html_url"]
+            # コミットメッセージは1行目のみ使用
+            message = c["commit"]["message"].splitlines()[0]
+            # ISO 8601 → JST (UTC+9) に変換
+            dt_utc = datetime.fromisoformat(c["commit"]["author"]["date"].replace("Z", "+00:00"))
+            dt_jst = dt_utc.astimezone(tz=None)
+            date_str = dt_jst.strftime("%Y/%m/%d %H:%M")
+
+            embed.add_field(
+                name=message,
+                value=f"`{date_str}` · [`{sha}`]({html_url})",
+                inline=False,
+            )
+
+        await interaction.followup.send(embed=embed)
 
 # ============================================================
 # Cog のセットアップ・Bot 起動
