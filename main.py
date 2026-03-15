@@ -833,9 +833,17 @@ class LR2Cog(commands.Cog):
                 row = rec["row"]
                 total = rec["total"]
 
-                meta = meta_map.get(str(rno), {"title": "", "diff": ""})
+                meta = meta_map.get(str(rno), {"title": "", "diff": "", "course_id": ""})
                 title = meta.get("title", "")
                 diff = meta.get("diff", "")
+                course_id = meta.get("course_id", "")
+
+                # 曲名はIRランキングページへのリンクにする
+                lr2ir_base = "http://www.dream-pro.info/~lavalse/LR2IR/search.cgi?mode=ranking&courseid="
+                title_cell = (
+                    f'<a href="{lr2ir_base}{course_id}" target="_blank">{title}</a>'
+                    if course_id else title
+                )
 
                 # 上位3位はカラーハイライト付きで表示
                 rank = int(row.get("Rank"))
@@ -847,7 +855,7 @@ class LR2Cog(commands.Cog):
 
                 combined.append({
                     "回": int(rno),
-                    "曲名": title,
+                    "曲名": title_cell,
                     "難易度": format_difficulty(diff) if diff else "",
                     "順位": f"{rank_str} / {total}人",
                     "スコア": row.get("Score"),

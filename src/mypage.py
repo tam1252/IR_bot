@@ -85,9 +85,10 @@ def load_course_meta_map_sync(
         if rnd in (None, ""):
             continue
         key = _norm_round(rnd)
-        title = _get_value_fuzzy(r, "title", "曲名", "Title")
-        diff  = _get_value_fuzzy(r, "diff", "難易度", "Diff")
-        meta[key] = {"title": title or "", "diff": diff or ""}
+        title     = _get_value_fuzzy(r, "title", "曲名", "Title")
+        diff      = _get_value_fuzzy(r, "diff", "難易度", "Diff")
+        course_id = _get_value_fuzzy(r, "course_id", "CourseID", "courseid")
+        meta[key] = {"title": title or "", "diff": diff or "", "course_id": course_id or ""}
     return meta
 
 # ============================================================
