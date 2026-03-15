@@ -126,10 +126,6 @@ ANNOUNCE_CHANNEL=   # @everyone 告知を投稿するチャンネル名（デフ
 WEB_HOST=           # バインドアドレス（デフォルト: 0.0.0.0）
 WEB_PORT=           # ポート番号（デフォルト: 8080）
 WEB_BASE_URL=       # 外部公開 URL（例: https://xxxx.code.run）
-
-# /changelog コマンド
-GITHUB_REPO=        # リポジトリ名（例: tam1252/IR_bot）
-GITHUB_TOKEN=       # GitHub Personal Access Token（任意・省略可）
 ```
 
 ---
