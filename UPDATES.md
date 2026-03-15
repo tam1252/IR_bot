@@ -5,7 +5,8 @@
 - マイページ (`/mypage all`) がファイル添付ではなく URL で閲覧できるようになりました（リンクは24時間有効です）
 - `/changelog` コマンドで Bot の更新情報を確認できるようになりました
 
-![マイページデモ](https://i.imgur.com/XXXXXXX.png)
+![Discordスクショ](https://raw.githubusercontent.com/tam1252/IR_bot/main/img/demo0.png)
+![IRページ](https://raw.githubusercontent.com/tam1252/IR_bot/main/img/demo1.png)
 
 ## v1.1.0
 
