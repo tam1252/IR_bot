@@ -139,21 +139,39 @@ def _fetch_user_records_all_rounds_sync(
     """
     NebukawaIR(result) の全タブを走査し、ユーザーの全記録を返す。
     タブ名が数字のもの（回ごとのシート）のみ対象とする。
+    values_batch_get で全タブを1回の API 呼び出しで取得してレート制限を回避する。
     戻り値: [{'round': int, 'row': dict, 'total': int}, ...]
     """
     gc = _authorize_gc()
     sh = gc.open_by_key(result_sheet_id)
+
+    # 数字タブのみ対象（worksheets() は1回の API 呼び出し）
+    numeric_ws = [
+        (ws, int(ws.title.strip()))
+        for ws in sh.worksheets()
+        if ws.title.strip().isdigit()
+    ]
+    if not numeric_ws:
+        return []
+
+    # 全タブを1回の API 呼び出しで取得
+    ranges = [f"'{ws.title}'!A:Z" for ws, _ in numeric_ws]
+    response = sh.values_batch_get(ranges)
+
     results = []
-    for ws in sh.worksheets():
-        title = ws.title.strip()
-        # タブ名が数字でないもの（例: CourseData）はスキップ
-        if not title.isdigit():
+    for (_, round_no), value_range in zip(numeric_ws, response.get("valueRanges", [])):
+        all_values = value_range.get("values", [])
+        if len(all_values) < 2:
             continue
-        round_no = int(title)
-        rows = ws.get_all_records()
+        headers = all_values[0]
+        # 列数が足りない行は空文字で補完
+        rows = [
+            dict(zip(headers, row + [""] * (len(headers) - len(row))))
+            for row in all_values[1:]
+        ]
         total = len(rows)
         for r in rows:
-            if str(r.get("LR2ID")).strip() == str(lr2id).strip():
+            if str(r.get("LR2ID", "")).strip() == str(lr2id).strip():
                 results.append({"round": round_no, "row": r, "total": total})
                 break
     return results
