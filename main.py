@@ -480,10 +480,8 @@ class AnnounceModal(ui.Modal, title="イベントアナウンス"):
         if general_ch:
             await general_ch.send(
                 f"@everyone\n"
-                f"第{self.round.value}回の課題曲は "
-                f"**{format_difficulty(self.difficulty.value)} {self.songtitle.value}** です。\n"
-                f"開催期間: {start.strftime('%Y/%m/%d %H:%M:%S')} ～ {end.strftime('%Y/%m/%d %H:%M:%S')}\n"
-                f"詳細は {channel.mention} をチェック！"
+                f"#{self.round.value} 開催期間:{start.strftime('%Y/%m/%d %H:%M:%S')}～{end.strftime('%Y/%m/%d %H:%M:%S')}\n"
+                f"課題曲: {format_difficulty(self.difficulty.value)} {self.songtitle.value}"
             )
 
         await interaction.followup.send(
