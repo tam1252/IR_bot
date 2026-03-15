@@ -64,6 +64,8 @@ WS_USERDATA = "UserData"            # ユーザーデータタブ（DiscordID | 
 SHEET_ID = os.environ.get("MAIN_ID")
 COURSE_WS = "CourseData"            # コースデータタブ
 COURSE_JSON_PATH = 'course_id.json'
+SCORETA_CATEGORY_NAME = "開催中のスコアタ"  # 告知チャンネルを作成するカテゴリー名
+ANNOUNCE_CHANNEL_NAME = os.environ.get("ANNOUNCE_CHANNEL", "一般")  # @everyone告知を投稿するチャンネル名
 
 # insane_scores.csv を読み込み、表示用ラベル列を追加
 insane_scores = pd.read_csv('insane_scores.csv')
@@ -378,16 +380,47 @@ class AnnounceModal(ui.Modal, title="イベントアナウンス"):
             hour=23, minute=59, second=59
         )
 
-        # チャンネル名用スラッグを生成（英数字以外をアンダースコアに変換）
+        # チャンネル名用スラッグを生成
+        # ★ はそのまま保持、それ以外の記号はアンダースコアに変換
         def to_slug(text: str) -> str:
-            return ''.join(c.lower() if c.isalnum() else '_' for c in text).strip('_')
+            return ''.join(
+                c.lower() if c.isalnum() else ('★' if c == '★' else '_')
+                for c in text
+            ).strip('_')
 
         slug = (
             f"{self.round.value}_"
             f"{to_slug(format_difficulty(self.difficulty.value))}_"
             f"{to_slug(self.songtitle.value)}"
         )
-        channel = await interaction.guild.create_text_channel(slug)
+
+        # アーカイブカテゴリ名を計算する（例: round=15 → "11-20"）
+        def archive_category_name(round_no: int) -> str:
+            lower = ((round_no - 1) // 10) * 10 + 1
+            return f"{lower}-{lower + 9}"
+
+        # 「開催中のスコアタ」カテゴリーを取得（なければ作成）
+        active_category = discord.utils.get(
+            interaction.guild.categories, name=SCORETA_CATEGORY_NAME
+        )
+        if active_category is None:
+            active_category = await interaction.guild.create_category(SCORETA_CATEGORY_NAME)
+
+        # 「開催中のスコアタ」内の既存チャンネルをアーカイブカテゴリへ移動
+        for ch in list(active_category.channels):
+            # チャンネル名の先頭部分から回数を抽出（例: "5_★12_air" → 5）
+            try:
+                ch_round = int(ch.name.split("_")[0])
+            except (ValueError, IndexError):
+                continue
+            arch_name = archive_category_name(ch_round)
+            arch_category = discord.utils.get(interaction.guild.categories, name=arch_name)
+            if arch_category is None:
+                arch_category = await interaction.guild.create_category(arch_name)
+            await ch.edit(category=arch_category)
+
+        # 新チャンネルを「開催中のスコアタ」に作成
+        channel = await interaction.guild.create_text_channel(slug, category=active_category)
 
         # URL または数値から LR2 CourseID を抽出
         lr2id_raw = self.lr2id.value.strip()
@@ -424,7 +457,7 @@ class AnnounceModal(ui.Modal, title="イベントアナウンス"):
             )
             return
 
-        # 告知チャンネルにイベント情報を投稿
+        # 告知チャンネル（新規作成したチャンネル）にイベント詳細を投稿
         lr2_url = (
             f"http://www.dream-pro.info/~lavalse/LR2IR/search.cgi"
             f"?mode=ranking&courseid={lr2id_val}"
@@ -439,6 +472,18 @@ class AnnounceModal(ui.Modal, title="イベントアナウンス"):
             f"[コースURL]({lr2_url}) [コースファイルダウンロードはここから]({lr2_course_url})\n"
             f"開催期間: {start.strftime('%Y/%m/%d %H:%M:%S')} ～ {end.strftime('%Y/%m/%d %H:%M:%S')}"
         )
+
+        # 「一般」チャンネルに @everyone メンション付きの告知を投稿
+        general_ch = discord.utils.get(
+            interaction.guild.text_channels, name=ANNOUNCE_CHANNEL_NAME
+        )
+        if general_ch:
+            await general_ch.send(
+                f"@everyone\n"
+                f"#{self.round.value} 開催期間:{start.strftime('%Y/%m/%d %H:%M:%S')}～{end.strftime('%Y/%m/%d %H:%M:%S')}\n"
+                f"課題曲: {format_difficulty(self.difficulty.value)} {self.songtitle.value}"
+            )
+
         await interaction.followup.send(
             f"{channel.mention} にアナウンスを投稿しました。",
             ephemeral=True
