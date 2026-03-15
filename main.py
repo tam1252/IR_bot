@@ -1,118 +1,108 @@
+# ============================================================
+# IR Bot - メインエントリーポイント
+# LR2IR を利用したランキング管理・BPI計算 Discord Bot
+# ============================================================
+
 import os
+import re
 import json
 import asyncio
 from io import BytesIO
-import re
-import requests
-import numpy as np
 from datetime import datetime, timedelta
 import logging
 
 import discord
+import gspread
+import gspread_asyncio
+import numpy as np
+import pandas as pd
+import requests
 from discord import app_commands, ui, Interaction, Embed
 from discord.ext import commands
 from dotenv import load_dotenv
-from pandas import DataFrame, json_normalize
-import pandas as pd
-import requests
-import os
-import json
-import asyncio
-import gspread_asyncio
+from pandas import DataFrame
 from google.oauth2.service_account import Credentials
-from discord import app_commands, Interaction
-from discord.ext import commands
-from src.mypage import (load_course_meta_map_sync, _fetch_user_record_one_round_sync,
-                        _fetch_user_records_all_rounds_sync, _authorize_gc, _get_lr2id_by_discord_sync)
+
+from src.mypage import (
+    load_course_meta_map_sync,
+    _fetch_user_record_one_round_sync,
+    _fetch_user_records_all_rounds_sync,
+    _get_lr2id_by_discord_sync,
+)
 from src.result import build_id_to_name_from_sheet
 from src.generate_table import generate_bootstrap_html_table
-from src.common import safe_defer
-
+from src.common import safe_defer, _authorize_gc
 from src import lr2ir  # fetch_lr2_ranking を含む自作モジュール
-import gspread
 
+# .env ファイルから環境変数を読み込む
 load_dotenv()
 
+# ============================================================
+# ログ設定
+# ============================================================
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s:%(levelname)s:%(name)s: %(message)s',
     handlers=[
         logging.FileHandler('ir_bot.log', encoding='utf-8'),
-        logging.StreamHandler()
-        ]
+        logging.StreamHandler(),
+    ]
 )
-
+# コンソールには WARNING 以上のみ表示
 console_logger = logging.getLogger()
 console_logger.setLevel(logging.WARNING)
 
-# === 設定 ===
-
+# ============================================================
+# 定数・設定
+# ============================================================
 COURSE_RESULT_FILE = "course_result.json"
 LR2ID_DB_FILE = "lr2_users.json"
 ANNOUNCE_ROLE_NAME = "管理者"
-SHEET_NAME = "NebukawaIR"     # あなたのスプレッドシート名
+SHEET_NAME = "NebukawaIR"           # メインスプレッドシート名
 SHEET_NANE_SCORE = "NebukawaIR(result)"
-WS_USERDATA = "UserData"      # タブ名（ヘッダー: DiscordID | LR2ID）
-SHEET_ID = os.environ.get("MAIN_ID")          # NebukawaIR のシートIDを .env へ
-COURSE_WS = "CourseData"  # タブ名（デフォルト CourseData）
+WS_USERDATA = "UserData"            # ユーザーデータタブ（DiscordID | LR2ID）
+SHEET_ID = os.environ.get("MAIN_ID")
+COURSE_WS = "CourseData"            # コースデータタブ
+COURSE_JSON_PATH = 'course_id.json'
 
+# insane_scores.csv を読み込み、表示用ラベル列を追加
 insane_scores = pd.read_csv('insane_scores.csv')
-insane_scores["label"] = insane_scores.apply(lambda row: f"★{row['level']} {row['title']}", axis=1)
+insane_scores["label"] = insane_scores.apply(
+    lambda row: f"★{row['level']} {row['title']}", axis=1
+)
+
+# Bot の初期化
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix='!', intents=intents)
 
+# ============================================================
+# 認証・Google Sheets ユーティリティ
+# ============================================================
 
-
-# === 共通ユーティリティ ===
-
-async def safe_reply(inter: Interaction, content: str, *, ephemeral: bool = True):
-    try:
-        if inter.response.is_done():
-            # すでに最初の応答を済ませている → followup で送る
-            await inter.followup.send(content, ephemeral=ephemeral)
-        else:
-            # まだ応答していない → 初回応答で送る
-            await inter.response.send_message(content, ephemeral=ephemeral)
-    except discord.errors.NotFound:
-        # interaction が失効している場合のフォールバック（任意）
-        # 失敗時はログに残すか、許容できるならチャンネルに通知する
-        # await inter.channel.send(f"{inter.user.mention} {content}")
-        pass
-
-def _create_async_creds():
+def _create_async_creds() -> Credentials:
+    """gspread_asyncio 用の非同期認証情報を生成して返す。"""
     sa_info = json.loads(os.environ["GCP_SA_JSON"])
     scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive",
     ]
     return Credentials.from_service_account_info(sa_info, scopes=scopes)
-    
-def _parse_score(score_text: str):
-    SCORE_RE = re.compile(r'(?P<a>\d[\d,]*)\s*/\s*(?P<b>\d[\d,]*)\s*\(\s*(?P<p>[\d.]+)\s*%\s*\)')
-    """
-    "aaaa/bbbb(cc.cc%)" -> (own:int, rate:float)
-    パース失敗は (None, None)
-    """
-    if not score_text:
-        return None, None
-    m = SCORE_RE.search(str(score_text))
-    if not m:
-        return None, None
-    own = int(m.group("a").replace(",", ""))
-    rate = float(m.group("p"))
-    return own, rate
 
-def _authorize_gc():
-    sa_info = json.loads(os.environ["GCP_SA_JSON"])
-    scopes = [
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive",
-    ]
-    creds = Credentials.from_service_account_info(sa_info, scopes=scopes)
-    return gspread.authorize(creds)
+
+def _get_or_create_ws(sh, title: str, rows: int, cols: int):
+    """指定タイトルのワークシートを取得し、存在しなければ新規作成して返す。"""
+    try:
+        return sh.worksheet(title)
+    except gspread.WorksheetNotFound:
+        return sh.add_worksheet(title=title, rows=rows, cols=max(6, cols))
+
 
 def _open_or_create_ws_by_name(spreadsheet_id: str, ws_title: str):
-    HEADERS = ["回", "diff", "title", "CourseID"]  # ← シートの列
+    """
+    スプレッドシートIDとタブ名を指定してワークシートを開く。
+    存在しない場合は CourseData 用ヘッダーで新規作成する。
+    """
+    HEADERS = ["回", "diff", "title", "CourseID"]
     gc = _authorize_gc()
     sh = gc.open_by_key(spreadsheet_id)
     try:
@@ -122,76 +112,71 @@ def _open_or_create_ws_by_name(spreadsheet_id: str, ws_title: str):
         ws.update("A1", [HEADERS])
     return ws
 
-def upsert_course_row(
-    spreadsheet_id: str,
-    worksheet_title: str,
-    round_no: int,
-    diff: str | int,
-    title: str,
-    course_id: int,
-):
-    HEADERS = ["回", "diff", "title", "CourseID"]  # ← シートの列
-    """
-    CourseData タブで指定の「回」が既にあれば上書き、無ければ末尾に追加。
-    """
-    ws = _open_or_create_ws_by_name(spreadsheet_id, worksheet_title)
+# ============================================================
+# データ操作ユーティリティ
+# ============================================================
 
-    # A列（回）を取得して探索（ヘッダー除外）
-    col = ws.col_values(1)
-    header = col[0] if col else ""
-    rows = col[1:] if header == HEADERS[0] else col
-    base_row = 2 if header == HEADERS[0] else 1
-
-    try:
-        idx = [int(x) for x in rows].index(int(round_no))
-        rownum = base_row + idx
-        # 行全体を上書き（A:回, B:diff, C:title, D:CourseID）
-        ws.update(
-            values=[[round_no, diff, title, course_id]],
-            range_name=f"A{rownum}:D{rownum}"
-        )
-        return "updated"
-    except ValueError:
-        ws.append_row([round_no, diff, title, course_id], value_input_option="RAW")
-        return "inserted"
-
-def _authorize_gc():
-    sa_info = json.loads(os.environ["GCP_SA_JSON"])
-    scopes = [
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive",
-    ]
-    creds = Credentials.from_service_account_info(sa_info, scopes=scopes)
-    return gspread.authorize(creds)
-
-def _get_or_create_ws(sh, title: str, rows: int, cols: int):
-    try:
-        return sh.worksheet(title)
-    except gspread.WorksheetNotFound:
-        return sh.add_worksheet(title=title, rows=rows, cols=max(6, cols))
-
-
-def save_json(path, data):
+def save_json(path: str, data) -> None:
+    """データを JSON ファイルに保存する。"""
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
+
 def extract_lr2id_from_bytes(content: bytes) -> int:
+    """バイト列のコースファイルから COURSEID を抽出して返す。"""
     for line in content.decode(errors="ignore").splitlines():
         if line.startswith("#COURSEID"):
             return int(line.strip().split()[1])
     raise ValueError("COURSEIDが見つかりませんでした")
 
-def format_difficulty(diff: int) -> str:
-    return f"★{diff}"
+
+def format_difficulty(diff) -> str:
+    """
+    難易度を "★N" 形式にフォーマットして返す。
+    すでに "★" で始まる文字列はそのまま返す。
+    """
+    if isinstance(diff, str) and diff.startswith("★"):
+        return diff
+    try:
+        return f"★{int(diff)}"
+    except (ValueError, TypeError):
+        return str(diff)
+
+
+def _parse_score(score_text: str):
+    """
+    "aaaa/bbbb(cc.cc%)" 形式のスコア文字列を解析する。
+    戻り値: (自スコア: int, スコアレート: float)
+    パース失敗時は (None, None) を返す。
+    """
+    SCORE_RE = re.compile(
+        r'(?P<a>\d[\d,]*)\s*/\s*(?P<b>\d[\d,]*)\s*\(\s*(?P<p>[\d.]+)\s*%\s*\)'
+    )
+    if not score_text:
+        return None, None
+    m = SCORE_RE.search(str(score_text))
+    if not m:
+        return None, None
+    own = int(m.group("a").replace(",", ""))
+    rate = float(m.group("p"))
+    return own, rate
+
+# ============================================================
+# BPI 計算
+# ============================================================
 
 def pgf(x, m):
+    """BPI 計算用のスコア変換関数。"""
     if x == 1:
         return m
-    else:
-        return 0.5 / (1 - x)
+    return 0.5 / (1 - x)
 
-def calculate_bpi(s, k, z, m, p):
-    """単曲BPIを計算する関数"""
+
+def calculate_bpi(s, k, z, m, p) -> float:
+    """
+    単曲 BPI を計算して返す。
+    s: 自スコア, k: 平均スコア, z: トップスコア, m: 理論値, p: 補正係数
+    """
     S = pgf(s / m, m)
     K = pgf(k / m, m)
     Z = pgf(z / m, m)
@@ -201,29 +186,73 @@ def calculate_bpi(s, k, z, m, p):
     if s >= k:
         return float(round(100 * (np.log(S_prime) ** p) / (np.log(Z_prime) ** p), 2))
     else:
-        return float(round(max(-100 * ((np.abs(np.log(S_prime)) ** p) / (np.log(Z_prime) ** p)), -15), 2))
+        return float(round(
+            max(-100 * ((np.abs(np.log(S_prime)) ** p) / (np.log(Z_prime) ** p)), -15), 2
+        ))
+
+# ============================================================
+# スプレッドシート書き込み
+# ============================================================
+
+def upsert_course_row(
+    spreadsheet_id: str,
+    worksheet_title: str,
+    round_no: int,
+    diff: str | int,
+    title: str,
+    course_id: int,
+) -> str:
+    """
+    CourseData タブの指定「回」の行を上書き、存在しなければ末尾に追加する。
+    戻り値: "updated" or "inserted"
+    """
+    HEADERS = ["回", "diff", "title", "CourseID"]
+    ws = _open_or_create_ws_by_name(spreadsheet_id, worksheet_title)
+
+    # A列（回）を取得し、ヘッダー行を除外して検索
+    col = ws.col_values(1)
+    header = col[0] if col else ""
+    rows = col[1:] if header == HEADERS[0] else col
+    base_row = 2 if header == HEADERS[0] else 1
+
+    try:
+        idx = [int(x) for x in rows].index(int(round_no))
+        row_num = base_row + idx
+        # 既存行を上書き（A:回, B:diff, C:title, D:CourseID）
+        ws.update(
+            values=[[round_no, diff, title, course_id]],
+            range_name=f"A{row_num}:D{row_num}"
+        )
+        return "updated"
+    except ValueError:
+        # 対象行が存在しないので末尾に追加
+        ws.append_row([round_no, diff, title, course_id], value_input_option="RAW")
+        return "inserted"
 
 
-def write_round_result_to_sheet(spreadsheet_id: str, round_title: str, result_list: list[dict]):
+def write_round_result_to_sheet(
+    spreadsheet_id: str,
+    round_title: str,
+    result_list: list[dict],
+) -> None:
+    """
+    1回分の result_list を指定スプレッドシートの「round_title」タブへ
+    A1 起点で一括書き込みする。
+    カラム: Rank, LR2ID, PlayerName, Score, Score Rate (%), BPI
+    """
     HEADERS = ["Rank", "LR2ID", "PlayerName", "Score", "Score Rate (%)", "BPI"]
-    """
-    1回分の result_list（あなたのロジックで作った辞書配列）を
-    指定スプレッドシートの「round_title」タブへ一括書き込み（A1起点）。
-    カラム: HEADERS
-    """
     gc = _authorize_gc()
     sh = gc.open_by_key(spreadsheet_id)
 
     rows = []
     for e in result_list:
-        score_text = e.get("スコア")
-        own, rate = _parse_score(score_text)
+        own, rate = _parse_score(e.get("スコア"))
         rows.append([
             e.get("順位"),
             e.get("LR2ID"),
             e.get("プレイヤー"),
-            own,        # Score（自分のスコア）
-            rate,       # Score Rate (%)
+            own,   # 自スコア
+            rate,  # スコアレート (%)
             e.get("BPI"),
         ])
 
@@ -231,24 +260,6 @@ def write_round_result_to_sheet(spreadsheet_id: str, round_title: str, result_li
     ws = _get_or_create_ws(sh, round_title, rows=len(values), cols=len(HEADERS))
     ws.update("A1", values, value_input_option="RAW")
 
-def format_difficulty(diff: str) -> str:
-    # 例: "★12" or "12" をそのまま/装飾したい場合はここで調整
-    # 入力が「★12」の場合はそのまま、"12" なら "★12" など
-    if isinstance(diff, str) and diff.startswith("★"):
-        return diff
-    try:
-        return f"★{int(diff)}"
-    except:
-        return str(diff)
-
-def _authorize_gc():
-    sa_info = json.loads(os.environ["GCP_SA_JSON"])
-    scopes = [
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive",
-    ]
-    creds = Credentials.from_service_account_info(sa_info, scopes=scopes)
-    return gspread.authorize(creds)
 
 def fetch_course_id_by_round_sync(
     spreadsheet_id: str,
@@ -256,19 +267,19 @@ def fetch_course_id_by_round_sync(
     round_value: str | int,
 ) -> int:
     """
-    CourseData から Round==round_value の行を探し、CourseID(int) を返す。
-    ヘッダは 'Round' 前提。日本語運用なら '回' もフォールバック。
-    見つからなければ ValueError。
+    CourseData タブから round_value に対応する CourseID を取得して返す。
+    ヘッダーは 'Round' または '回' を許容する。
+    見つからない場合は ValueError を送出する。
     """
     gc = _authorize_gc()
     sh = gc.open_by_key(spreadsheet_id)
     ws = sh.worksheet(worksheet_title)
 
-    # [{ 'Round': 1, 'diff': '★12', 'title': 'xxx', 'CourseID': 12345 }, ...]
     rows = ws.get_all_records()
     target = str(round_value).strip()
 
     for r in rows:
+        # 'Round' または '回' キーで値を取得
         key_round = r.get("Round", r.get("回"))
         if key_round is None:
             continue
@@ -280,22 +291,67 @@ def fetch_course_id_by_round_sync(
 
     raise ValueError(f"Round={target} が CourseData に見つかりません")
 
-# === 初期データ読み込み ===
-COURSE_JSON_PATH = 'course_id.json'
+# ============================================================
+# Discord ユーティリティ
+# ============================================================
 
-# === イベント ===
+async def safe_reply(inter: Interaction, content: str, *, ephemeral: bool = True):
+    """Interaction に対して安全に返信する。応答済みの場合は followup を使う。"""
+    try:
+        if inter.response.is_done():
+            await inter.followup.send(content, ephemeral=ephemeral)
+        else:
+            await inter.response.send_message(content, ephemeral=ephemeral)
+    except discord.errors.NotFound:
+        # interaction が失効している場合は無視
+        pass
+
+
+async def _safe_defer(interaction: discord.Interaction, ephemeral: bool = True) -> bool:
+    """defer を安全に試みる。応答済みまたは失敗した場合は False を返す。"""
+    if interaction.response.is_done():
+        return True
+    try:
+        await interaction.response.defer(ephemeral=ephemeral, thinking=True)
+        return True
+    except (discord.NotFound, discord.HTTPException):
+        return False
+
+
+async def _safe_send(interaction: discord.Interaction, content: str, ephemeral: bool = True):
+    """
+    応答状態に応じて send_message / followup.send を使い分けて送信する。
+    Interaction が失効している場合はチャンネルへフォールバックする。
+    """
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(content, ephemeral=ephemeral)
+        else:
+            await interaction.response.send_message(content, ephemeral=ephemeral)
+    except (discord.NotFound, discord.HTTPException):
+        # Interaction 失効時はチャンネルに直接送信
+        await interaction.channel.send(content)
+
+# ============================================================
+# Bot イベント
+# ============================================================
+
 @bot.event
 async def on_ready():
+    """Bot 起動時にスラッシュコマンドをグローバルに同期する。"""
     print(f"ログインしました: {bot.user}")
     try:
         await bot.tree.sync()
     except Exception as e:
         print(f"コマンド同期エラー: {e}")
 
-# === モーダルによるアナウンス ===
+# ============================================================
+# /announce コマンド（管理者専用）
+# ============================================================
 
-# === モーダル ===
 class AnnounceModal(ui.Modal, title="イベントアナウンス"):
+    """イベント情報を入力するモーダルフォーム。"""
+
     round = ui.TextInput(label="回数（例: 1）", required=True)
     difficulty = ui.TextInput(label="難易度（例: ★12）", required=True)
     songtitle = ui.TextInput(label="曲名（例: Angelic Snow）", required=True)
@@ -309,26 +365,31 @@ class AnnounceModal(ui.Modal, title="イベントアナウンス"):
         # 最初の応答は defer（以降は followup を使う）
         await interaction.response.defer(ephemeral=True, thinking=True)
 
-        # ★ 環境変数からスプレッドシートID・タブ名を取得（ファイルは読まない）
-        sheet_id = os.environ.get("MAIN_ID")             # ← ここを使用
+        sheet_id = os.environ.get("MAIN_ID")
         course_ws = "CourseData"
         if not sheet_id:
             await interaction.followup.send("MAIN_ID が未設定です。.env を確認してください。", ephemeral=True)
             return
 
-        # 開催期間の計算
+        # 開催期間の計算（当日23:00 〜 翌週火曜23:59）
         now = datetime.now()
         start = now.replace(hour=23, minute=0, second=0, microsecond=0)
-        end = (start + timedelta(days=(7 - start.weekday() + 1))).replace(hour=23, minute=59, second=59)
+        end = (start + timedelta(days=(7 - start.weekday() + 1))).replace(
+            hour=23, minute=59, second=59
+        )
 
-        # チャンネル名用スラッグ
+        # チャンネル名用スラッグを生成（英数字以外をアンダースコアに変換）
         def to_slug(text: str) -> str:
             return ''.join(c.lower() if c.isalnum() else '_' for c in text).strip('_')
 
-        slug = f"{self.round.value}_{to_slug(format_difficulty(self.difficulty.value))}_{to_slug(self.songtitle.value)}"
+        slug = (
+            f"{self.round.value}_"
+            f"{to_slug(format_difficulty(self.difficulty.value))}_"
+            f"{to_slug(self.songtitle.value)}"
+        )
         channel = await interaction.guild.create_text_channel(slug)
 
-        # LR2ID 抽出（URL or 数値）
+        # URL または数値から LR2 CourseID を抽出
         lr2id_raw = self.lr2id.value.strip()
         if "courseid=" in lr2id_raw:
             try:
@@ -343,17 +404,16 @@ class AnnounceModal(ui.Modal, title="イベントアナウンス"):
                 await interaction.followup.send("LR2IDが正しくありません。", ephemeral=True)
                 return
 
-        # ★ スプレッドシートにアップサート（同期I/Oはスレッドへ）
-        diff_value = self.difficulty.value
+        # スプレッドシートへのアップサート（同期I/Oはスレッドプールで実行）
         loop = interaction.client.loop
         try:
-            result = await loop.run_in_executor(
+            await loop.run_in_executor(
                 None,
-                upsert_course_row,   # sheets_course_data.py の関数（ファイルは使わない）
+                upsert_course_row,
                 sheet_id,
                 course_ws,
                 int(self.round.value),
-                diff_value,
+                self.difficulty.value,
                 str(self.songtitle.value),
                 int(lr2id_val),
             )
@@ -364,9 +424,15 @@ class AnnounceModal(ui.Modal, title="イベントアナウンス"):
             )
             return
 
-        # 案内メッセージ（followup）
-        lr2_url = f"http://www.dream-pro.info/~lavalse/LR2IR/search.cgi?mode=ranking&courseid={lr2id_val}"
-        lr2_course_url = f"http://www.dream-pro.info/~lavalse/LR2IR/search.cgi?mode=downloadcourse&courseid={lr2id_val}"
+        # 告知チャンネルにイベント情報を投稿
+        lr2_url = (
+            f"http://www.dream-pro.info/~lavalse/LR2IR/search.cgi"
+            f"?mode=ranking&courseid={lr2id_val}"
+        )
+        lr2_course_url = (
+            f"http://www.dream-pro.info/~lavalse/LR2IR/search.cgi"
+            f"?mode=downloadcourse&courseid={lr2id_val}"
+        )
         await channel.send(
             f"# 第{self.round.value}回\n"
             f"**{self.songtitle.value}** ({format_difficulty(self.difficulty.value)})\n"
@@ -378,52 +444,32 @@ class AnnounceModal(ui.Modal, title="イベントアナウンス"):
             ephemeral=True
         )
 
-# === コマンド登録 ===
+
 @bot.tree.command(name="announce", description="イベントアナウンス（運営専用）")
 async def announce(interaction: Interaction):
+    """管理者ロールを持つユーザーのみアナウンスモーダルを開く。"""
     if not any(role.name == ANNOUNCE_ROLE_NAME for role in interaction.user.roles):
         await interaction.response.send_message("このコマンドは運営のみ使用できます。", ephemeral=True)
         return
     await interaction.response.send_modal(AnnounceModal())
 
-async def _safe_defer(interaction: discord.Interaction, ephemeral: bool = True) -> bool:
-    """deferを安全に試みる。失敗してもFalseで返す。"""
-    if interaction.response.is_done():
-        return True
-    try:
-        await interaction.response.defer(ephemeral=ephemeral, thinking=True)
-        return True
-    except discord.NotFound:
-        return False
-    except discord.HTTPException:
-        return False
+# ============================================================
+# /result コマンド（管理者専用）
+# ============================================================
 
-async def _safe_send(interaction: discord.Interaction, content: str, ephemeral: bool = True):
-    """最初の応答/フォローアップを安全に送る。最後の手段で通常メッセージ。"""
-    try:
-        if interaction.response.is_done():
-            await interaction.followup.send(content, ephemeral=ephemeral)
-        else:
-            await interaction.response.send_message(content, ephemeral=ephemeral)
-    except discord.NotFound:
-        # ephem は不可だが、とりあえずチャンネルに出す（必要なら運営チャンネル限定にする）
-        await interaction.channel.send(content)
-    except discord.HTTPException:
-        await interaction.channel.send(content)
-
-#リザルト表示
 @bot.tree.command(name="result", description="指定した回のランキングを表示")
 @app_commands.describe(event="対象の回数（例: 1）")
 async def result(interaction: discord.Interaction, event: str):
-    # 1) まず超最初にdefer（3秒対策）
+    """LR2IR からランキングを取得し、BPI を計算してスプレッドシートへ保存・表示する。"""
+    # 1) 3秒タイムアウト対策として最初に defer
     await _safe_defer(interaction, ephemeral=True)
 
-    # 2) 権限チェック
+    # 2) 管理者ロールのチェック
     if not any(role.name == ANNOUNCE_ROLE_NAME for role in interaction.user.roles):
         await _safe_send(interaction, "このコマンドは運営のみ使用できます。", ephemeral=True)
         return
 
-    # 3) CourseData から CourseID を取得（スプレッドシート）
+    # 3) 環境変数からスプレッドシートIDを取得
     sheet_id = os.getenv("MAIN_ID")
     output_id = os.getenv("SCORE_ID")
     course_ws = "CourseData"
@@ -431,11 +477,12 @@ async def result(interaction: discord.Interaction, event: str):
         await _safe_send(interaction, "MAIN_ID（または SCORE_ID）が未設定です。.env を確認してください。", ephemeral=True)
         return
 
+    # 4) CourseData タブから対象回の CourseID を取得
     try:
         loop = asyncio.get_running_loop()
         course_id = await loop.run_in_executor(
             None,
-            fetch_course_id_by_round_sync,  # 同期関数
+            fetch_course_id_by_round_sync,
             sheet_id,
             course_ws,
             event
@@ -444,7 +491,7 @@ async def result(interaction: discord.Interaction, event: str):
         await _safe_send(interaction, f"CourseData から回 {event} の CourseID を取得できませんでした。\n```\n{e}\n```", ephemeral=True)
         return
 
-    # 4) ランキング取得（同期処理が内部であればOK／重いなら executor 化）
+    # 5) LR2IR からランキングデータを取得
     df = lr2ir.fetch_lr2_ranking(course_id)
     df = df.dropna()
 
@@ -458,9 +505,12 @@ async def result(interaction: discord.Interaction, event: str):
         await _safe_send(interaction, "プレイヤー名の列が見つかりませんでした。", ephemeral=True)
         return
 
-    # 5) BMSID 取得（HTTPは速いが、失敗時のガードのみ）
+    # 6) LR2IR のランキングページから BMSID を取得して BPI パラメータを引く
     try:
-        course_url = f"http://www.dream-pro.info/~lavalse/LR2IR/search.cgi?mode=ranking&courseid={course_id}"
+        course_url = (
+            f"http://www.dream-pro.info/~lavalse/LR2IR/search.cgi"
+            f"?mode=ranking&courseid={course_id}"
+        )
         html = requests.get(course_url, timeout=10).text
         m = re.search(r'search\.cgi\?mode=ranking&bmsid=(\d+)', html)
         if not m:
@@ -471,7 +521,7 @@ async def result(interaction: discord.Interaction, event: str):
         await _safe_send(interaction, f"BMSID取得中にエラー: {e}", ephemeral=True)
         return
 
-    # 6) insane_scores からパラメータ取得
+    # 7) insane_scores から BPI 計算用パラメータを取得
     score_row = insane_scores[insane_scores['lr2_bmsid'] == bmsid]
     if score_row.empty:
         await _safe_send(interaction, "insane_scoresに該当するBMSIDが見つかりませんでした。", ephemeral=True)
@@ -481,9 +531,9 @@ async def result(interaction: discord.Interaction, event: str):
     m = s_row["theoretical_score"]
     k = s_row["average_score"]
     z = s_row["top_score"]
-    p = max(s_row["optimized_p"], 0.8)
+    p = max(s_row["optimized_p"], 0.8)  # p の下限を 0.8 に設定
 
-    # 7) BPI算出 & リスト化
+    # 8) 各プレイヤーの BPI を算出してリスト化
     result_list = []
     df = df.sort_values("順位").reset_index(drop=True)
     for _, row in df.iterrows():
@@ -501,24 +551,24 @@ async def result(interaction: discord.Interaction, event: str):
             "スコア": score_str,
             "PG": int(row.get("PG", 0)),
             "GR": int(row.get("GR", 0)),
-            "BPI": bpi
+            "BPI": bpi,
         })
 
-    # 8) スプレッドシートへ書き込み（同期I/Oは executor）
+    # 9) 結果をスプレッドシートへ書き込み（同期I/Oはスレッドプールで実行）
     try:
         await _safe_send(interaction, "スプレッドシートへ書き込み中…", ephemeral=True)
         await loop.run_in_executor(
             None,
-            write_round_result_to_sheet,  # (spreadsheet_id, round_title, result_list)
+            write_round_result_to_sheet,
             output_id,
-            str(event),   # タブ名
-            result_list
+            str(event),
+            result_list,
         )
     except Exception as e:
         await _safe_send(interaction, f"スプレッドシート書き込みに失敗しました。\n```\n{e}\n```", ephemeral=True)
         return
 
-    # 9) 表示メッセージ作成
+    # 10) Discord への表示メッセージを生成（メダル表示あり）
     id_to_name = await build_id_to_name_from_sheet(interaction.guild)
 
     medals = ["🥇", "🥈", "🥉"]
@@ -533,6 +583,7 @@ async def result(interaction: discord.Interaction, event: str):
         score = row["スコア"]
         bpi = row["BPI"]
 
+        # 同順位が続いている間はメダルインデックスを進めない
         if prev_rank is not None and rank != prev_rank:
             medal_idx += count_same_rank
             count_same_rank = 0
@@ -544,10 +595,17 @@ async def result(interaction: discord.Interaction, event: str):
 
     await _safe_send(interaction, msg, ephemeral=False)
 
-# === BPI計算 ===
+# ============================================================
+# /bpi コマンド
+# ============================================================
+
 @bot.tree.command(name="bpi", description="スコアからBPIを計算")
-@app_commands.describe(song="★難易度と曲名（例: ★16 Born [29Another]）", score="あなたのスコア（整数）")
+@app_commands.describe(
+    song="★難易度と曲名（例: ★16 Born [29Another]）",
+    score="あなたのスコア（整数）"
+)
 async def bpi(interaction: discord.Interaction, song: str, score: int):
+    """指定した曲名とスコアから BPI を計算して表示する。"""
     await interaction.response.defer(thinking=True, ephemeral=True)
 
     try:
@@ -557,7 +615,7 @@ async def bpi(interaction: discord.Interaction, song: str, score: int):
         await interaction.followup.send("該当する楽曲が見つかりませんでした。", ephemeral=True)
         return
 
-    bpi = calculate_bpi(
+    bpi_value = calculate_bpi(
         s=score,
         k=row["average_score"],
         z=row["top_score"],
@@ -568,71 +626,74 @@ async def bpi(interaction: discord.Interaction, song: str, score: int):
     await interaction.followup.send(
         f"**{row['title']} (★{row['level']}) の BPI**\n"
         f"あなたのスコア: {score}\n"
-        f"→ **BPI: {bpi}**",
+        f"→ **BPI: {bpi_value}**",
         ephemeral=True
     )
 
-# === オートコンプリート ===
+
 @bpi.autocomplete("song")
 async def song_autocomplete(interaction: discord.Interaction, current: str):
+    """曲名の入力に対して insane_scores からオートコンプリート候補を返す（最大25件）。"""
     filtered = [
         label for label in insane_scores["label"]
         if current.lower() in label.lower()
-    ][:25]  # Discordの制限
-
+    ][:25]
     return [app_commands.Choice(name=label, value=label) for label in filtered]
 
-# === 登録・マイページ ===
+# ============================================================
+# LR2Cog（/register・/mypage コマンド）
+# ============================================================
+
 class LR2Cog(commands.Cog):
+    """LR2ID の登録とマイページ表示を担当する Cog。"""
+
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        # gspread_asyncio のクライアントマネージャーを初期化
         self.agcm = gspread_asyncio.AsyncioGspreadClientManager(_create_async_creds)
-        self._agc = None  # authorized client cache
+        self._agc = None  # 認証済みクライアントのキャッシュ
 
     async def _get_ws(self):
-        # 使い回し用にクライアントをキャッシュ
+        """UserData ワークシートを取得する（クライアントをキャッシュして再利用）。"""
         if self._agc is None:
             self._agc = await self.agcm.authorize()
         sh = await self._agc.open(SHEET_NAME)
         ws = await sh.worksheet(WS_USERDATA)
         return ws
 
-    async def _upsert_user(self, discord_id: str, lr2id: str):
+    async def _upsert_user(self, discord_id: str, lr2id: str) -> str:
         """
-        UserData シートで DiscordID が既に存在すれば LR2ID を上書き、
-        無ければ末尾に追記する。
+        UserData シートの DiscordID を検索し、存在すれば LR2ID を更新、
+        なければ末尾に新規追加する。
         期待ヘッダー: A列=DiscordID, B列=LR2ID
+        戻り値: "updated" or "inserted"
         """
         ws = await self._get_ws()
 
-        # 1) DiscordID 列を一括取得（ヘッダーを除く）
-        #   - 先頭行がヘッダー想定なので A2:A を取得
-        col = await ws.col_values(1)  # ['DiscordID', '123...', '456...', ...] の可能性がある
+        # A列の DiscordID を一括取得し、ヘッダー行を除外
+        col = await ws.col_values(1)
         if col and col[0] == "DiscordID":
-            discord_ids = col[1:]  # ヘッダー除外
+            discord_ids = col[1:]
             base_row = 2
         else:
-            # ヘッダーがない場合もケア（そのまま先頭から扱う）
             discord_ids = col
             base_row = 1
 
-        # 2) 既存検索
         try:
+            # 既存DiscordIDが見つかれば B列（LR2ID）を更新
             idx = discord_ids.index(discord_id)
             row_num = base_row + idx
-            # B列(LR2ID) を更新
-            # batch_update でもよいが単セルなら update_cell が簡単
             await ws.update_cell(row_num, 2, lr2id)
             return "updated"
         except ValueError:
-            # 3) 見つからなければ追記
+            # 存在しない場合は末尾に追記
             await ws.append_row([discord_id, lr2id], value_input_option="RAW")
             return "inserted"
-
 
     @app_commands.command(name="register", description="自分のLR2IDを登録")
     @app_commands.describe(lr2id="LR2IRのplayerid")
     async def register(self, interaction: Interaction, lr2id: str):
+        """Discord ID と LR2ID を紐づけて UserData シートに保存する。"""
         discord_id = str(interaction.user.id)
         try:
             await interaction.response.defer(ephemeral=True, thinking=True)
@@ -640,10 +701,10 @@ class LR2Cog(commands.Cog):
             if result == "updated":
                 msg = f"更新しました。(LR2ID を `{lr2id}` に変更)"
             else:
-                msg = f"新規登録しました。"
+                msg = "新規登録しました。"
             await interaction.followup.send(msg, ephemeral=True)
         except Exception as e:
-            # 権限（シェア）/ シート名 / ネットワーク等のエラー向け
+            # 権限・シート名・ネットワーク等のエラー
             await interaction.followup.send(
                 f"登録に失敗しました。設定を確認してください。\n```\n{e}\n```",
                 ephemeral=True
@@ -652,18 +713,17 @@ class LR2Cog(commands.Cog):
     @app_commands.command(name="mypage", description="自分の過去のランキングを確認")
     @app_commands.describe(event="対象の回数（例: 1）、または 'all'")
     async def mypage(self, interaction: Interaction, event: str):
-        # ▼ ここを UserData 参照に変更 ▼
+        """指定した回（または全回）の自分のランキング結果を表示する。"""
+        # UserData の参照先シートを環境変数から取得
         userdata_sheet_id = os.getenv("USERDATA_ID") or os.getenv("MAIN_ID")
         userdata_ws = os.getenv("USERDATA_WS", "UserData")
         if not userdata_sheet_id:
             await interaction.response.send_message("USERDATA_ID（または MAIN_ID）が未設定です。.env を確認してください。", ephemeral=True)
             return
 
-        # まず defer（後続は followup で）
         await interaction.response.defer(thinking=True, ephemeral=True)
 
-        # UserData から自分の LR2ID を取得（同期I/Oは executor に逃がす）
-        import asyncio
+        # UserData から自分の LR2ID を取得（同期I/Oはスレッドプールで実行）
         loop = asyncio.get_running_loop()
         try:
             lr2id = await loop.run_in_executor(
@@ -678,11 +738,15 @@ class LR2Cog(commands.Cog):
             return
 
         if not lr2id:
-            await interaction.followup.send("先に `/register` でLR2IDを登録してください。（UserDataに見つかりませんでした）", ephemeral=True)
+            await interaction.followup.send(
+                "先に `/register` でLR2IDを登録してください。（UserDataに見つかりませんでした）",
+                ephemeral=True
+            )
             return
 
-        main_sheet_id   = os.getenv("MAIN_ID")            # NebukawaIR（CourseData）
-        result_sheet_id = os.getenv("SCORE_ID")           # NebukawaIR(result)
+        # 各スプレッドシートIDとタブ名を環境変数から取得
+        main_sheet_id = os.getenv("MAIN_ID")
+        result_sheet_id = os.getenv("SCORE_ID")
         course_ws = os.getenv("COURSE_WS", "CourseData")
 
         if not result_sheet_id:
@@ -695,14 +759,16 @@ class LR2Cog(commands.Cog):
         await safe_defer(interaction, ephemeral=True)
         loop = asyncio.get_running_loop()
 
-        # ✅ CourseData を一度だけロードして辞書に
+        # CourseData をロードしてメタ情報マップ（回 → {title, diff}）を構築
         try:
-            meta_map = await loop.run_in_executor(None, load_course_meta_map_sync, main_sheet_id, course_ws)
+            meta_map = await loop.run_in_executor(
+                None, load_course_meta_map_sync, main_sheet_id, course_ws
+            )
         except Exception as e:
             await interaction.followup.send(f"CourseData 取得に失敗しました。\n```\n{e}\n```", ephemeral=True)
             return
 
-        # ========== all ==========
+        # ---- all モード: 全回の成績を HTML テーブルで送信 ----
         if event.lower() == "all":
             try:
                 all_records = await loop.run_in_executor(
@@ -724,8 +790,9 @@ class LR2Cog(commands.Cog):
 
                 meta = meta_map.get(str(rno), {"title": "", "diff": ""})
                 title = meta.get("title", "")
-                diff  = meta.get("diff", "")
+                diff = meta.get("diff", "")
 
+                # 上位3位はカラーハイライト付きで表示
                 rank = int(row.get("Rank"))
                 color_map = {1: "gold", 2: "silver", 3: "#cd7f32"}
                 rank_str = (
@@ -753,7 +820,7 @@ class LR2Cog(commands.Cog):
             )
             return
 
-        # ========== 単一回 ==========
+        # ---- 単一回モード: 指定回の成績を Embed で表示 ----
         try:
             rec, total = await loop.run_in_executor(
                 None, _fetch_user_record_one_round_sync, result_sheet_id, event, lr2id
@@ -766,9 +833,10 @@ class LR2Cog(commands.Cog):
             await interaction.followup.send(f"第{event}回での記録が見つかりませんでした。", ephemeral=True)
             return
 
-        meta = meta_map.get(str(int(float(event)))) or meta_map.get(str(event), {"title":"", "diff":""})
+        # float 表記（例: "1.0"）にも対応してキーを検索
+        meta = meta_map.get(str(int(float(event)))) or meta_map.get(str(event), {"title": "", "diff": ""})
         title = meta.get("title", "")
-        diff  = meta.get("diff", "")
+        diff = meta.get("diff", "")
 
         embed = Embed(
             title=f"第{event}回 ランキング",
@@ -782,18 +850,24 @@ class LR2Cog(commands.Cog):
 
         await interaction.followup.send(embed=embed, ephemeral=True)
 
+# ============================================================
+# Help Cog（/help コマンド）
+# ============================================================
+
 class Help(commands.Cog):
+    """コマンド一覧を表示する Cog。"""
+
     def __init__(self, bot):
         self.bot = bot
 
     @app_commands.command(name="help", description="Botの使い方とコマンド一覧を表示します")
     async def help(self, interaction: Interaction):
+        """利用可能なコマンドの一覧を Embed で表示する。"""
         embed = Embed(
             title="📘 IR Bot ヘルプ",
             description="このBotで使える主なコマンドと機能一覧です。",
             color=0x3498db
         )
-
         embed.add_field(
             name="/register [LR2ID]",
             value="自分のDiscordアカウントとLR2IDを紐づけます。サーバーに入った人は初めにこのコマンドを実行してください \n 例: `/register 123456`",
@@ -819,14 +893,19 @@ class Help(commands.Cog):
             value="指定された回のランキングを表示します。(管理者用)",
             inline=False
         )
-
         embed.set_footer(text="質問や不具合は運営(ねぶかわ)かbot制作者(ひたらぎ)までどうぞ！")
-        await interaction.response.send_message(embed=embed, ephemeral=True)  # ユーザーのみに表示
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+# ============================================================
+# Cog のセットアップ・Bot 起動
+# ============================================================
 
 @bot.event
 async def setup_hook():
+    """Bot 起動前に Cog を登録する。"""
     await bot.add_cog(LR2Cog(bot))
     await bot.add_cog(Help(bot))
 
-# === 起動 ===
+
+# Bot を起動
 bot.run(os.getenv("DISCORD_TOKEN"))
