@@ -940,7 +940,7 @@ class Help(commands.Cog):
             inline=False
         )
         embed.add_field(
-            name="/changelog [件数]",
+            name="/changelog",
             value="Botの最近の更新情報を表示します。",
             inline=False
         )
@@ -948,11 +948,8 @@ class Help(commands.Cog):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @app_commands.command(name="changelog", description="Botの最近の更新情報を表示します")
-    @app_commands.describe(count="表示するセクション数（1〜10、デフォルト: 3）")
-    async def changelog(self, interaction: Interaction, count: int = 3):
+    async def changelog(self, interaction: Interaction):
         """UPDATES.md を読み込んでユーザー向け更新情報を Embed で表示する。"""
-        count = max(1, min(count, 10))
-
         updates_path = os.path.join(os.path.dirname(__file__), "UPDATES.md")
         try:
             with open(updates_path, encoding="utf-8") as f:
@@ -965,12 +962,12 @@ class Help(commands.Cog):
         sections = [s.strip() for s in content.split("## ") if s.strip()]
 
         embed = Embed(
-            title="🔄 Bot 更新情報",
+            title="IR_Bot 更新情報",
             color=discord.Color.blurple(),
         )
 
         image_set = False
-        for section in sections[:count]:
+        for section in sections:
             lines = section.splitlines()
             title = lines[0].strip()   # 1行目がセクション名（日付など）
 

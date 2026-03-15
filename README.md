@@ -147,7 +147,7 @@ WEB_BASE_URL=       # 外部公開 URL（例: https://xxxx.code.run）
 | `/register [lr2id]` | 全員 | Discord ID と LR2ID を紐づけて登録する |
 | `/mypage [回数\|all]` | 全員 | 指定回の成績を表示。`all` でマイページの URL を返す（24時間有効） |
 | `/bpi [song] [score]` | 全員 | 曲名（オートコンプリート対応）とスコアから BPI を計算 |
-| `/changelog [件数]` | 全員 | GitHub のコミット履歴から Bot の更新情報を表示（1〜10件） |
+| `/changelog` | 全員 | Bot の更新情報を表示（UPDATES.md 全セクション） |
 | `/announce` | 管理者 | イベント情報をモーダルで入力し、告知チャンネルを作成 |
 | `/result [回数]` | 管理者 | LR2IR からランキングを取得してスプレッドシートに保存・表示 |
 | `/help` | 全員 | コマンド一覧を表示 |
