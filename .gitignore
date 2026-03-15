@@ -4,4 +4,7 @@
 *.pyc
 */__pycache__/*
 nebukawa*.json
-
+*.log
+*.cpython
+*.pyc
+src/__pycache__/lr2ir.cpython-313.pyc
