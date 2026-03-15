@@ -910,7 +910,7 @@ class Help(commands.Cog):
     async def help(self, interaction: Interaction):
         """利用可能なコマンドの一覧を Embed で表示する。"""
         embed = Embed(
-            title="📘 IR Bot ヘルプ",
+            title="IR_Bot ヘルプ",
             description="このBotで使える主なコマンドと機能一覧です。",
             color=0x3498db
         )
@@ -939,8 +939,52 @@ class Help(commands.Cog):
             value="指定された回のランキングを表示します。(管理者用)",
             inline=False
         )
+        embed.add_field(
+            name="/changelog",
+            value="Botの最近の更新情報を表示します。",
+            inline=False
+        )
         embed.set_footer(text="質問や不具合は運営(ねぶかわ)かbot制作者(ひたらぎ)までどうぞ！")
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="changelog", description="Botの最近の更新情報を表示します")
+    async def changelog(self, interaction: Interaction):
+        """UPDATES.md を読み込んでユーザー向け更新情報を Embed で表示する。"""
+        updates_path = os.path.join(os.path.dirname(__file__), "UPDATES.md")
+        try:
+            with open(updates_path, encoding="utf-8") as f:
+                content = f.read()
+        except FileNotFoundError:
+            await interaction.response.send_message("更新情報ファイルが見つかりません。", ephemeral=True)
+            return
+
+        # `## ` を区切りにセクションを分割（空セクションは除外）
+        sections = [s.strip() for s in content.split("## ") if s.strip()]
+
+        embed = Embed(
+            title="IR_Bot 更新情報",
+            color=discord.Color.blurple(),
+        )
+
+        image_set = False
+        for section in sections:
+            lines = section.splitlines()
+            title = lines[0].strip()   # 1行目がセクション名（日付など）
+
+            # `![](URL)` 形式の画像行を本文から分離し、最初の1枚を Embed 画像に設定
+            body_lines = []
+            for line in lines[1:]:
+                m = re.match(r'!\[.*?\]\((https?://\S+)\)', line.strip())
+                if m and not image_set:
+                    embed.set_image(url=m.group(1))
+                    image_set = True
+                else:
+                    body_lines.append(line)
+
+            body = "\n".join(body_lines).strip()
+            embed.add_field(name=title, value=body or "（内容なし）", inline=False)
+
+        await interaction.response.send_message(embed=embed)
 
 # ============================================================
 # Cog のセットアップ・Bot 起動
