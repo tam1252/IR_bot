@@ -7,7 +7,6 @@ import os
 import re
 import json
 import asyncio
-from io import BytesIO
 from datetime import datetime, timedelta
 import logging
 
@@ -32,6 +31,7 @@ from src.mypage import (
 from src.result import build_id_to_name_from_sheet
 from src.generate_table import generate_bootstrap_html_table
 from src.common import safe_defer, _authorize_gc
+from src.web_server import store_page, start_web_server
 from src import lr2ir  # fetch_lr2_ranking を含む自作モジュール
 
 # .env ファイルから環境変数を読み込む
@@ -857,10 +857,11 @@ class LR2Cog(commands.Cog):
 
             result_df = DataFrame(combined).sort_values("回")
             html = generate_bootstrap_html_table(result_df, "あなたのねぶかわウィークリー成績一覧")
-            html_bytes = BytesIO(html.encode("utf-8"))
+            token = store_page(html)
+            base_url = os.getenv("WEB_BASE_URL", f"http://localhost:{os.getenv('WEB_PORT', '8080')}")
+            url = f"{base_url}/mypage/{token}"
             await interaction.followup.send(
-                content="あなたの全記録をHTML形式で送信します。",
-                file=discord.File(html_bytes, filename="mypage_all.html"),
+                content=f"マイページを生成しました（有効期限: 24時間）\n{url}",
                 ephemeral=True
             )
             return
@@ -947,9 +948,15 @@ class Help(commands.Cog):
 
 @bot.event
 async def setup_hook():
-    """Bot 起動前に Cog を登録する。"""
+    """Bot 起動前に Cog を登録し、マイページ配信用 Web サーバーを起動する。"""
     await bot.add_cog(LR2Cog(bot))
     await bot.add_cog(Help(bot))
+
+    # マイページ配信用 HTTP サーバーを起動
+    web_host = os.getenv("WEB_HOST", "0.0.0.0")
+    web_port = int(os.getenv("WEB_PORT", "8080"))
+    await start_web_server(web_host, web_port)
+    logging.getLogger(__name__).info("Web server started on %s:%s", web_host, web_port)
 
 
 # Bot を起動
